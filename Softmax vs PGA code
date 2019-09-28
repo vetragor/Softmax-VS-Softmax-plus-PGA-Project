@@ -1,0 +1,294 @@
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+import pickle, gzip
+sys.path.append("..")
+import scipy.sparse as sparse
+
+
+
+def read_pickle_data(file_name):
+    f = gzip.open(file_name, 'rb')
+    data = pickle.load(f, encoding='latin1')
+    f.close()
+    return data
+
+def write_pickle_data(data, file_name):
+    f = gzip.open(file_name, 'wb')
+    pickle.dump(data, f)
+    f.close()
+
+def get_MNIST_data():
+    """
+    Reads mnist dataset from file
+
+    Returns:
+        train_x - 2D Numpy array (n, d) where each row is an image
+        train_y - 1D Numpy array (n, ) where each row is a label
+        test_x  - 2D Numpy array (n, d) where each row is an image
+        test_y  - 1D Numpy array (n, ) where each row is a label
+
+    """
+    train_set, valid_set, test_set = read_pickle_data('Datasets/mnist.pkl.gz')
+    train_x, train_y = train_set
+    valid_x, valid_y = valid_set
+    train_x = np.vstack((train_x, valid_x))
+    train_y = np.append(train_y, valid_y)
+    test_x, test_y = test_set
+    return (train_x, train_y, test_x, test_y)
+
+
+# Load MNIST data:
+train_x, train_y, test_x, test_y = get_MNIST_data()
+
+def compute_probabilities(X, theta, temp_parameter):
+    """
+    Computes, for each datapoint X[i], the probability that X[i] is labeled as j
+    for j = 0, 1, ..., k-1
+
+    Args:
+        X - (n, d) NumPy array (n datapoints each with d features)
+        theta - (k, d) NumPy array, where row j represents the parameters of our model for label j
+        temp_parameter - the temperature parameter of softmax function (scalar)
+    Returns:
+        H - (k, n) NumPy array, where each entry H[j][i] is the probability that X[i] is labeled as j
+    """
+    temp = 1 / temp_parameter
+    power = temp * theta.dot(X.T)
+    c_maximum = power.max(axis=0)
+    power = power - c_maximum
+    e_to_power = np.exp(power)
+    co_sum = e_to_power.sum(axis=0)
+
+    return e_to_power / co_sum
+
+
+def compute_cost_function(X, Y, theta, lambda_factor, temp_parameter):
+    """
+    Computes the total cost over every datapoint.
+
+    Args:
+        X - (n, d) NumPy array (n datapoints each with d features)
+        Y - (n, ) NumPy array containing the labels (a number from 0-9) for each
+            data point
+        theta - (k, d) NumPy array, where row j represents the parameters of our
+                model for label j
+        lambda_factor - the regularization constant (scalar)
+        temp_parameter - the temperature parameter of softmax function (scalar)
+
+    Returns
+        c - the cost value (scalar)
+    """
+    probs = compute_probabilities(X, theta, temp_parameter)
+    crossec_probs = np.choose(Y.astype('int32'), probs)
+
+
+    first_part_cost = np.sum(np.log(crossec_probs))
+    first_part_cost = first_part_cost * (-1/X.shape[0])
+    second_part_cost = (np.sum(np.square(theta))) * (lambda_factor / 2)
+    cost_func = first_part_cost + second_part_cost
+
+    return cost_func
+
+
+def run_gradient_descent_iteration(X, Y, theta, alpha, lambda_factor, temp_parameter):
+    """
+    Runs one step of batch gradient descent
+
+    Args:
+        X - (n, d) NumPy array (n datapoints each with d features)
+        Y - (n, ) NumPy array containing the labels (a number from 0-9) for each
+            data point
+        theta - (k, d) NumPy array, where row j represents the parameters of our
+                model for label j
+        alpha - the learning rate (scalar)
+        lambda_factor - the regularization constant (scalar)
+        temp_parameter - the temperature parameter of softmax function (scalar)
+
+    Returns:
+        theta - (k, d) NumPy array that is the final value of parameters theta
+    """
+    itemp = 1. / temp_parameter
+    num_examples = X.shape[0]
+    num_labels = theta.shape[0]
+    probabilities = compute_probabilities(X, theta, temp_parameter)
+    # M[i][j] = 1 if y^(j) = i and 0 otherwise.
+    M = sparse.coo_matrix(([1] * num_examples, (Y, range(num_examples))), shape=(num_labels, num_examples)).toarray()
+    non_regularized_gradient = np.dot(M - probabilities, X)
+    non_regularized_gradient *= -itemp / num_examples
+    return theta - alpha * (non_regularized_gradient + lambda_factor * theta)
+
+
+def augment_feature_vector(X):
+    """
+    Adds the x[i][0] = 1 feature for each data point x[i].
+
+    Args:
+        X - a NumPy matrix of n data points, each with d - 1 features
+
+    Returns: X_augment, an (n, d) NumPy array with the added feature for each datapoint
+    """
+    column_of_ones = np.zeros([len(X), 1]) + 1
+    return np.hstack((column_of_ones, X))
+
+
+def softmax_regression(X, Y, temp_parameter, alpha, lambda_factor, k, num_iterations):
+    """
+    Runs batch gradient descent for a specified number of iterations on a dataset
+    with theta initialized to the all-zeros array. Here, theta is a k by d NumPy array
+    where row j represents the parameters of our model for label j for
+    j = 0, 1, ..., k-1
+
+    Args:
+        X - (n, d - 1) NumPy array (n data points, each with d-1 features)
+        Y - (n, ) NumPy array containing the labels (a number from 0-9) for each
+            data point
+        temp_parameter - the temperature parameter of softmax function (scalar)
+        alpha - the learning rate (scalar)
+        lambda_factor - the regularization constant (scalar)
+        k - the number of labels (scalar)
+        num_iterations - the number of iterations to run gradient descent (scalar)
+
+    Returns:
+        theta - (k, d) NumPy array that is the final value of parameters theta
+        cost_function_progression - a Python list containing the cost calculated at each step of gradient descent
+    """
+    X = augment_feature_vector(X)
+    theta = np.zeros([k, X.shape[1]])
+    cost_function_progression = []
+    for i in range(num_iterations):
+        cost_function_progression.append(compute_cost_function(X, Y, theta, lambda_factor, temp_parameter))
+        theta = run_gradient_descent_iteration(X, Y, theta, alpha, lambda_factor, temp_parameter)
+    return theta, cost_function_progression
+
+
+def plot_cost_function_over_time(cost_function_history):
+    plt.plot(range(len(cost_function_history)), cost_function_history)
+    plt.ylabel('Cost Function')
+    plt.xlabel('Iteration number')
+    plt.show()
+
+
+def compute_test_error(X, Y, theta, temp_parameter):
+    error_count = 0.
+    assigned_labels = get_classification(X, theta, temp_parameter)
+    return 1 - np.mean(assigned_labels == Y)
+
+def get_classification(X, theta, temp_parameter):
+    """
+    Makes predictions by classifying a given dataset
+
+    Args:
+        X - (n, d - 1) NumPy array (n data points, each with d - 1 features)
+        theta - (k, d) NumPy array where row j represents the parameters of our model for
+                label j
+        temp_parameter - the temperature parameter of softmax function (scalar)
+
+    Returns:
+        Y - (n, ) NumPy array, containing the predicted label (a number between 0-9) for
+            each data point
+    """
+    X = augment_feature_vector(X)
+    probabilities = compute_probabilities(X, theta, temp_parameter)
+    return np.argmax(probabilities, axis = 0)
+
+def principal_components(centered_data):
+    """
+    Returns the principal component vectors of the data, sorted in decreasing order
+    of eigenvalue magnitude. This function first calculates the covariance matrix
+    and then finds its eigenvectors.
+
+    Args:
+        centered_data - n x d NumPy array of n data points, each with d features
+
+    Returns:
+        d x d NumPy array whose columns are the principal component directions sorted
+        in descending order by the amount of variation each direction (these are
+        equivalent to the d eigenvectors of the covariance matrix sorted in descending
+        order of eigenvalues, so the first column corresponds to the eigenvector with
+        the largest eigenvalue
+    """
+    scatter_matrix = np.dot(centered_data.transpose(), centered_data)
+    eigen_values, eigen_vectors = np.linalg.eig(scatter_matrix)
+
+    # Re-order eigenvectors by eigenvalue magnitude:
+    idx = eigen_values.argsort()[::-1]
+
+    eigen_values = eigen_values[idx]
+
+    eigen_vectors = eigen_vectors[:, idx]
+
+    return eigen_vectors
+
+
+def center_data(X):
+    """
+    Returns a centered version of the data, where each feature now has mean = 0
+
+    Args:
+        X - n x d NumPy array of n data points, each with d features
+
+    Returns:
+        - (n, d) NumPy array X' where for each i = 1, ..., n and j = 1, ..., d:
+        X'[i][j] = X[i][j] - means[j]
+        - (d, ) NumPy array with the columns means
+
+    """
+    #X = np.asarray(X)
+    feature_means = X.mean(axis=0)
+    return (X - feature_means), feature_means
+
+
+def project_onto_PC(X, pcs, n_components):
+    """
+    Given principal component vectors pcs = principal_components(X)
+    this function returns a new data array in which each sample in X
+    has been projected onto the first n_components principcal components.
+    """
+
+    # Hint: these principal components = first n_components columns
+    #       of the eigenvectors returned by principal_components().
+    #       Note that each eigenvector is already be a unit-vector,
+    #       so the projection may be done using matrix multiplication.
+
+
+
+
+
+
+
+
+
+
+    newX, ave = center_data(X)
+
+    new_pcs = pcs[0:, 0: n_components]
+    new_pcs_t = np.transpose(new_pcs)
+
+    new_data_set = np.dot(new_pcs_t, np.transpose(newX))
+
+    return -1 * np.transpose(new_data_set)
+
+
+
+theta, cost_function_history = softmax_regression(train_x, train_y, 1, alpha=0.3, lambda_factor=1.0e-4,
+                                                  k=10, num_iterations=150)
+plot_cost_function_over_time(cost_function_history)
+test_error = compute_test_error(test_x, test_y, theta, 1)
+# Save the model parameters theta obtained from calling softmax_regression to disk.
+write_pickle_data(theta, "./theta.pkl.gz")
+
+print('softmax test_error=', test_error)
+
+
+
+n_components = 21
+pcs = principal_components(train_x)
+train_pca = project_onto_PC(train_x, pcs, n_components)
+test_pca = project_onto_PC(test_x, pcs, n_components)
+
+theta, cost_function_history = softmax_regression(train_pca, train_y, 1, alpha=0.3, lambda_factor=1.0e-4, k=10, num_iterations=150)
+plot_cost_function_over_time(cost_function_history)
+test_error_pca = compute_test_error(test_pca, test_y, theta, 1)
+
+print('pca test error', test_error_pca)
